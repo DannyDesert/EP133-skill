@@ -30,6 +30,42 @@ With this skill, you can:
 
 ---
 
+## Creative Workflow 🎨
+
+**This tool is a creative starting point, not a replacement for making music.**
+
+Think of it like having a collaborator who can quickly sketch out ideas for you to build on:
+
+### 🎯 Generate → Mod → Make It Yours
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   AI generates  │     │   Load it up    │     │   Make it YOUR  │
+│   a foundation  │────▶│   on EP-133     │────▶│   track         │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+     Starting               Raw material           Add your samples,
+     point only             to work with           FX, and creativity
+```
+
+### Use Cases
+
+| Workflow | Description |
+|----------|-------------|
+| **Beat Sketching** | Ask Claude for 10 different boom-bap variations, pick the one you like, then mod it with your own samples and FX |
+| **Genre Exploration** | Want to try making jungle but don't know the drum patterns? Get a starting pattern and learn from it |
+| **Random Sample Pack** | Tell Claude to fill all pads with random AI-generated samples by category (Group A = bongos, Group B = bass, etc.) as a creative constraint |
+| **Quick Prototyping** | Sketch out an idea fast, then refine it manually on the hardware |
+
+### Random Sample Pack Generator
+
+A community-requested use case: **create projects pre-loaded with random samples as a creative starting point.**
+
+> "Fill my pads with completely random samples - Group A only bongos, Group B bass, Group C oldschool drum machines"
+
+The result: an empty project pre-loaded with generated samples. No beats programmed - just **raw material** to inspire your own creations. A fun creative challenge!
+
+---
+
 ## How It Works
 
 ```
@@ -46,7 +82,7 @@ With this skill, you can:
 1. **Chat with Claude** - Describe the beat you want
 2. **Claude generates** - Creates a `.ppak` project file
 3. **Upload via [EP Sample Tool](https://teenage.engineering/apps/ep-sample-tool)** - Load it onto your EP-133
-4. **Play!** - Your AI-generated beat is ready
+4. **Play and modify!** - Add your own samples, tweak velocities, add FX, make it yours
 
 ---
 
@@ -82,6 +118,14 @@ Claude will:
 2. Program the pattern with proper timing
 3. Generate a `.ppak` file you can download
 
+### Batch Generation (Pro Tip 💡)
+
+Ask Claude to generate multiple variations at once:
+
+> "Make me 5 different lo-fi beats - I'll pick my favorite and mod it"
+
+This gives you options to choose from, then you add your own samples and personality.
+
 ### Getting Your Device SKU
 
 For the generated file to work, Claude needs your device's SKU. Get it by:
@@ -101,6 +145,7 @@ Claude will extract the SKU automatically.
 | "Create a 4-on-the-floor house pattern" | Classic kick pattern, offbeat hats, disco claps |
 | "I want a jungle/DnB breakbeat" | Chopped amen-style break at 160+ BPM |
 | "Generate something weird and experimental" | Polyrhythmic chaos, glitchy textures |
+| "Fill all pads with random percussive samples" | Empty project with samples ready to sequence |
 
 ---
 
@@ -109,7 +154,7 @@ Claude will extract the SKU automatically.
 ```
 ep133-skill/
 ├── SKILL.md                    # Main skill instructions for Claude
-├── LICENSE.txt                 # MIT License
+├── LICENSE                     # MIT License
 ├── README.md                   # You are here
 ├── scripts/
 │   └── create_ppak.py          # Python library for .ppak creation
@@ -127,6 +172,7 @@ This skill documents the reverse-engineered `.ppak` file format:
 - **ZIP structure** with leading-slash paths
 - **TAR archive** containing pads, patterns, and settings
 - **Binary pattern format** (8 bytes per event)
+- **96 PPQN timing** (officially confirmed by TE documentation)
 - **Group/pattern relationship** (pattern filename determines sample group)
 
 See [references/format-details.md](references/format-details.md) for complete specifications.
@@ -149,5 +195,5 @@ See [references/format-details.md](references/format-details.md) for complete sp
 ---
 
 <p align="center">
-  <sub>Not affiliated with Teenage Engineering. This is a community tool.</sub>
+  <sub>Not affiliated with Teenage Engineering. This is a community tool for creative exploration.</sub>
 </p>
