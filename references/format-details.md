@@ -1,5 +1,22 @@
 # EP-133 File Format Complete Reference
 
+## Official Device Specifications
+
+Per the Teenage Engineering EP-133 User Guide (v2.0.5):
+
+| Specification | Value |
+|---------------|-------|
+| Memory | 64 MB |
+| Sample Slots | 999 |
+| Pads | 12 × 4 groups |
+| Sequencer Resolution | **96 PPQN (ticks per quarter note)** |
+| Audio Input | 24-bit, SNR 96 dBA |
+| Audio Output | 24-bit, SNR 98 dBA |
+| MIDI | MMA Type A compliant |
+| Sync | 8th, 16th, 24 PPQN modes |
+
+Source: https://teenage.engineering/guides/ep-133/tech-specs
+
 ## meta.json Structure
 
 ```json
@@ -92,7 +109,9 @@ with open(pad_file, 'wb') as f:
 
 Binary file containing project settings. Preserve from template/backup - do not modify unless you understand the format.
 
-## Timing Reference
+## Timing Reference (Official: 96 PPQN)
+
+The EP-133 uses **96 ticks per quarter note** as its internal sequencer resolution. This is confirmed in the official Technical Specifications.
 
 | Note Value | Ticks | At 120 BPM |
 |------------|-------|------------|
