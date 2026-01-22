@@ -11,6 +11,18 @@ description: |
 
 Create `.ppak` project files for the Teenage Engineering EP-133 K.O. II sampler.
 
+## Device Specifications (Official)
+
+- **Memory**: 64 MB sampler/composer
+- **Sample Slots**: 999
+- **Pads**: 12 sample pads × 4 groups (A, B, C, D) = 48 total
+- **Sequencer Resolution**: 96 PPQN (ticks per quarter note)
+- **Audio**: 24-bit, SNR 96-98 dBA
+- **MIDI**: Type A compliant (MMA), opto-coupled input
+- **Sync**: 8th, 16th, 24 PPQN modes
+- **Current OS**: 2.0.5 (Dec 2025)
+- **Effects**: Delay, Reverb, Distortion, Chorus, Filter, Compressor + Punch-in FX 2.0
+
 ## File Format Overview
 
 A `.ppak` file is a ZIP archive with paths starting with `/` (leading slash required):
@@ -65,9 +77,21 @@ Sample assignment is at bytes 1-2 (uint16 little-endian):
 data[1:3] = struct.pack('<H', sample_number)
 ```
 
-### Timing Reference
+### Timing Reference (Official: 96 PPQN)
 
-At 120 BPM: 384 ticks = 1 bar, 96 ticks = 1 beat, 48 ticks = 8th note, 24 ticks = 16th note
+The EP-133 uses **96 ticks per quarter note (PPQN)** internally (per official Technical Specifications).
+
+| Duration | Ticks |
+|----------|-------|
+| 1 bar (4/4) | 384 |
+| 1 beat (quarter note) | 96 |
+| 8th note | 48 |
+| 16th note | 24 |
+| 32nd note | 12 |
+| Triplet 8th | 32 |
+| Triplet 16th | 16 |
+
+This matches standard MIDI resolution and allows precise swing/groove programming.
 
 ## Implementation
 
