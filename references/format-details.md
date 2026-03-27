@@ -51,29 +51,31 @@ Byte 3: 0x00 (constant)
 Offset  Size  Type      Description
 ------  ----  --------  -----------
 0       2     uint16LE  Time position (0-383 ticks per bar)
-2       1     uint8     Row byte (pad identifier)
+2       1     uint8     Row byte (pad file number identifier)
 3       1     uint8     Column byte (0x3c = 60 for normal playback)
 4       1     uint8     Velocity (0-127)
 5       3     bytes     Flags (typically 0x10 0x00 0x00)
 ```
 
-### Row Byte to Pad Mapping
+### Row Byte to Pad File Mapping
 ```
-Pad 1  = 0x00 (0)
-Pad 2  = 0x08 (8)
-Pad 3  = 0x10 (16)
-Pad 4  = 0x18 (24)
-Pad 5  = 0x20 (32)
-Pad 6  = 0x28 (40)
-Pad 7  = 0x30 (48)
-Pad 8  = 0x38 (56)
-Pad 9  = 0x40 (64)
-Pad 10 = 0x48 (72)
-Pad 11 = 0x50 (80)
-Pad 12 = 0x58 (88)
+Pad file 1  = 0x00 (0)
+Pad file 2  = 0x08 (8)
+Pad file 3  = 0x10 (16)
+Pad file 4  = 0x18 (24)
+Pad file 5  = 0x20 (32)
+Pad file 6  = 0x28 (40)
+Pad file 7  = 0x30 (48)
+Pad file 8  = 0x38 (56)
+Pad file 9  = 0x40 (64)
+Pad file 10 = 0x48 (72)
+Pad file 11 = 0x50 (80)
+Pad file 12 = 0x58 (88)
 ```
 
-Formula: `row_byte = (pad_number - 1) * 8`
+Formula: `row_byte = (pad_file_number - 1) * 8`
+
+**Note**: Pattern events use pad *file* numbers, not labeled pad numbers. See Pad Layout section.
 
 ### Column Byte
 
@@ -81,33 +83,117 @@ For standard drum playback, always use `0x3c` (60).
 
 Other values may represent chromatic pitch offsets but can cause issues. Stick to 0x3c unless experimenting.
 
+## Pad Layout — Labeled vs File Numbers
+
+The pad numbers printed on the device (labeled) do **not** match the pad file numbers (p01–p12) used in the tar archive. The bottom two rows of the 4×3 grid are swapped.
+
+Physical grid (4 rows × 3 columns):
+```
+Row 1 (top):    file p01  p02  p03   ←→  labeled  7   8   9
+Row 2:          file p04  p05  p06   ←→  labeled  4   5   6
+Row 3:          file p07  p08  p09   ←→  labeled  1   2   3
+Row 4 (bottom): file p10  p11  p12   ←→  labeled 10  11  12
+```
+
+Full mapping:
+
+| Labeled | File | Labeled | File |
+|---------|------|---------|------|
+| 1  | p07 | 7  | p01 |
+| 2  | p08 | 8  | p02 |
+| 3  | p09 | 9  | p03 |
+| 4  | p04 | 10 | p10 |
+| 5  | p05 | 11 | p11 |
+| 6  | p06 | 12 | p12 |
+
+Formula for labeled pads 1–9: `file = labeled + 6` if labeled ≤ 3, else `labeled - 6` if labeled ≥ 7, else `labeled`.
+Labeled pads 10–12 map directly to files p10–p12.
+
+`create_ppak.py` exports `LABEL_TO_PAD_FILE` and `PAD_FILE_TO_LABEL` dicts for this conversion.
+
 ## Pad File Binary Format (27 bytes)
 
 ```
 Offset  Size  Description
 ------  ----  -----------
-0       1     Unknown (preserve from template)
+0       1     Unknown (observed as 0x00)
 1       2     Sample number (uint16LE, 0 = no sample)
-3       24    Pad parameters (preserve from template)
+3       5     Unknown (observed as 0x00)
+8       2     Sample ROM ID (uint16LE) — see below
+10      2     Unknown (observed as 0x00)
+12      4     Project BPM (float32LE) — device writes this on sample assignment
+16      1     Volume (0–100; default 100 = full volume)
+17      3     Unknown (observed as 0x00)
+20      1     Unknown (0xff in all observed pads)
+21      3     Unknown (observed as 0x00)
+24      1     Pan (0–127; default 60 = center)
+25      2     Unknown (observed as 0x00)
 ```
 
-### Assigning a Sample
-```python
-import struct
+### Sample ROM ID (bytes 8–9)
 
-with open(pad_file, 'rb') as f:
-    data = bytearray(f.read())
+A uint16 little-endian value the device uses to locate the sample's audio data in ROM.
+**A pad with a valid sample number but a zero ROM ID will show the correct sample name but produce no sound.**
 
-# Set sample number at bytes 1-2
-data[1:3] = struct.pack('<H', sample_number)
+Properties (reverse-engineered from device backups):
+- Determined solely by sample number — pad number and group have no effect.
+- Cannot be derived arithmetically from the sample number; it is a ROM address.
+- The device's internal storage order differs from the user-facing category numbering:
+  samples are stored **hats → snares → kicks** (reverse of the 200s/100s/1s scheme).
+- Within each category, higher sample number = higher ROM offset (sequential storage).
+- The slope (ROM units per sample number) differs across categories, reflecting
+  different average sample lengths: ~402 units/sample for hats, ~257 for kicks.
 
-with open(pad_file, 'wb') as f:
-    f.write(data)
-```
+**Known values** (discovered by reassigning samples on device and diffing backups):
+
+| Sample | Name | ROM ID (uint16 LE) | Bytes 8–9 |
+|--------|------|--------------------|-----------|
+| 1 | MICRO KICK | 22412 | (140, 87) |
+| 31 | BOOMER KICK | 30133 | (181, 117) |
+| 126 | SNARE OPEN | 18697 | (9, 73) |
+| 203 | CLOSED HAT LO | 7558 | (134, 29) |
+| 221 | OPEN HAT REAL | 14798 | (206, 57) |
+
+**How to discover a new sample's ROM ID:**
+1. Load a ppak with the desired sample assigned to any pad.
+2. On the device, change that pad's sample assignment to any other sample, then back to the desired sample.
+3. Take a project backup.
+4. Extract bytes 8–9 from the pad file in the backup tar.
+5. Add the value to `PAD_SAMPLE_IDS` in `create_ppak.py`.
+
+### Volume and Group Project Volume
+
+Per-pad volume (byte 16) and group project volume are separate controls:
+
+- **Byte 16** (pad file): per-pad volume, 0–100. Default 100. Appears fixed in the pad file; the device does not update it when the user adjusts the sound-edit volume knob.
+- **Group project volume** (settings file, float32 at offsets 24/72/120/168 for groups A/B/C/D): what the sound-edit volume knob actually controls. Range 0.0–1.0, default 1.0.
 
 ## Settings File (222 bytes)
 
-Binary file containing project settings. Preserve from template/backup - do not modify unless you understand the format.
+Binary file. BPM and group volumes must be set; all other bytes default to the sentinel pattern below.
+
+```
+Offset  Size  Description
+------  ----  -----------
+0       4     Unknown (0x00)
+4       4     BPM (float32LE)
+8       16    Unknown (0x00)
+24      48    Group A: 12 × float32LE (see below)
+72      48    Group B: 12 × float32LE
+120     48    Group C: 12 × float32LE
+168     48    Group D: 12 × float32LE
+216     6     Unknown
+```
+
+### Group Volume Block (48 bytes = 12 × float32)
+
+Each group occupies 48 bytes starting at the offsets above.
+
+- **float[0]** (first 4 bytes): group project volume, 0.0–1.0. Default 1.0.
+- **float[5]**: pattern level (fader "level" assignment). Observed values vary.
+- **All other floats**: use sentinel value **-1.0** (= `0x000080bf`) meaning "use device default".
+
+Setting any of these to 0.0 instead of -1.0 will cause that parameter to be interpreted as zero (silent).
 
 ## Timing Reference (Official: 96 PPQN)
 
@@ -186,7 +272,7 @@ import json
 import os
 
 def create_pattern(events):
-    """Create pattern binary from list of (time, pad, velocity) tuples"""
+    """Create pattern binary from list of (time, pad_file_num, velocity) tuples"""
     if not events:
         return bytes([0x00, 0x01, 0x00, 0x00])
 
@@ -195,99 +281,10 @@ def create_pattern(events):
     data = header
 
     for time, pad, velocity in events:
-        row = (pad - 1) * 8
+        row = (pad - 1) * 8   # pad is the FILE number, not the labeled number
         col = 0x3c
         event = struct.pack('<H', time) + bytes([row, col, velocity, 0x10, 0x00, 0x00])
         data += event
 
     return data
-
-def create_ppak(project_num, patterns, pad_assignments, sounds_dir, output_path,
-                device_sku="TE032AS001", template_dir=None):
-    """
-    Create a complete .ppak file
-
-    Args:
-        project_num: 1-9
-        patterns: dict of {'a01': [(time, pad, vel), ...], 'b01': [...], ...}
-        pad_assignments: dict of {'a': {pad: sample, ...}, 'b': {...}, ...}
-        sounds_dir: path to directory containing .wav files
-        output_path: output .ppak path
-        device_sku: device serial (get from user's backup)
-        template_dir: optional path to template pads/settings
-    """
-
-    # Create working directory
-    work_dir = '/tmp/ep133_work'
-    os.makedirs(f'{work_dir}/pads/a', exist_ok=True)
-    os.makedirs(f'{work_dir}/pads/b', exist_ok=True)
-    os.makedirs(f'{work_dir}/pads/c', exist_ok=True)
-    os.makedirs(f'{work_dir}/pads/d', exist_ok=True)
-    os.makedirs(f'{work_dir}/patterns', exist_ok=True)
-
-    # Create pad files (27 bytes each)
-    pad_template = bytes([0x00] * 27)  # Minimal template
-    for group in ['a', 'b', 'c', 'd']:
-        for pad in range(1, 13):
-            data = bytearray(pad_template)
-            if group in pad_assignments and pad in pad_assignments[group]:
-                sample = pad_assignments[group][pad]
-                data[1:3] = struct.pack('<H', sample)
-            with open(f'{work_dir}/pads/{group}/p{pad:02d}', 'wb') as f:
-                f.write(data)
-
-    # Create pattern files
-    for pattern_name, events in patterns.items():
-        with open(f'{work_dir}/patterns/{pattern_name}', 'wb') as f:
-            f.write(create_pattern(events))
-
-    # Create settings file (minimal)
-    settings = bytes([0x00] * 222)
-    with open(f'{work_dir}/settings', 'wb') as f:
-        f.write(settings)
-
-    # Create tar
-    tar_buffer = io.BytesIO()
-    os.chdir(work_dir)
-    with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
-        tar.add('pads')
-        tar.add('patterns')
-        tar.add('settings')
-    tar_data = tar_buffer.getvalue()
-
-    # Create meta.json
-    meta = {
-        "info": "teenage engineering - pak file",
-        "pak_version": 1,
-        "pak_type": "user",
-        "pak_release": "1.2.0",
-        "device_name": "EP-133",
-        "device_sku": device_sku,
-        "device_version": "2.0.5",
-        "generated_at": "2026-01-21T12:00:00.000Z",
-        "author": "Claude",
-        "base_sku": device_sku
-    }
-
-    # Create final .ppak
-    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # Add tar with leading slash
-        info = zipfile.ZipInfo(f'/projects/P{project_num:02d}.tar')
-        info.compress_type = zipfile.ZIP_DEFLATED
-        zf.writestr(info, tar_data)
-
-        # Add meta.json
-        info = zipfile.ZipInfo('/meta.json')
-        info.compress_type = zipfile.ZIP_DEFLATED
-        zf.writestr(info, json.dumps(meta, indent=2))
-
-        # Add sounds
-        for fname in os.listdir(sounds_dir):
-            if fname.endswith('.wav'):
-                with open(os.path.join(sounds_dir, fname), 'rb') as sf:
-                    info = zipfile.ZipInfo(f'/sounds/{fname}')
-                    info.compress_type = zipfile.ZIP_DEFLATED
-                    zf.writestr(info, sf.read())
-
-    return output_path
 ```

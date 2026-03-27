@@ -16,18 +16,50 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
 
+# Mapping between labeled pad numbers (printed on device) and pad file numbers (p01-p12).
+# The bottom two rows of pads are swapped: labeled 1-3 live in files 7-9 and vice versa.
+# Row of 4-6 and row of 10-12 are unchanged.
+LABEL_TO_PAD_FILE: Dict[int, int] = {
+    1: 7,  2: 8,  3: 9,
+    4: 4,  5: 5,  6: 6,
+    7: 1,  8: 2,  9: 3,
+    10: 10, 11: 11, 12: 12,
+}
+PAD_FILE_TO_LABEL: Dict[int, int] = {v: k for k, v in LABEL_TO_PAD_FILE.items()}
+
+
+# Per-sample identifier bytes (8, 9) required for the device to locate sample audio.
+# Without these a pad shows the correct sample name but produces no sound.
+# Values are reverse-engineered by reassigning samples on device and diffing backups.
+# Add new entries as they are discovered.
+PAD_SAMPLE_IDS: Dict[int, Tuple[int, int]] = {
+    1:   (140,  87),  # MICRO KICK
+    31:  (181, 117),  # BOOMER KICK
+    126: (  9,  73),  # SNARE OPEN
+    203: (134,  29),  # CLOSED HAT LO
+    221: (206,  57),  # OPEN HAT REAL
+}
+
+
 class EP133Project:
     """Create EP-133 project files (.ppak)"""
 
-    def __init__(self, device_sku: str = "TE032AS001", project_num: int = 1):
+    def __init__(self, bpm: float, device_sku: str = "TE032AS001", project_num: int = 1,
+                 base_sku: Optional[str] = None):
         """
         Initialize a new EP-133 project.
 
         Args:
-            device_sku: Device serial number (get from user's backup meta.json)
+            bpm: Project tempo in BPM (required — zero BPM causes "Error Clock" on device)
+            device_sku: Device SKU (get from user's backup meta.json, e.g. "TE032AS002")
             project_num: Project slot 1-9
+            base_sku: Hardware base SKU (get from user's backup meta.json, e.g. "TE032AS001").
+                      Distinct from device_sku — get both from the backup's meta.json.
+                      Defaults to device_sku if not provided.
         """
+        self.bpm = float(bpm)
         self.device_sku = device_sku
+        self.base_sku = base_sku if base_sku is not None else device_sku
         self.project_num = project_num
         self.pad_assignments: Dict[str, Dict[int, int]] = {
             'a': {}, 'b': {}, 'c': {}, 'd': {}
@@ -101,14 +133,18 @@ class EP133Project:
 
         Args:
             pattern: Pattern name ('a01', 'b01', 'c01', 'd01')
-            time: Time position in ticks (0-383 for one bar)
+            time: Time position in ticks (96 PPQN; one bar = 384 ticks).
+                  Multi-bar patterns are valid — ticks beyond 383 are allowed.
             pad: Pad number 1-12
             velocity: Velocity 0-127 (default 100)
+
+        Note: duplicate (time, pad) pairs are silently deduplicated on save,
+        keeping the highest velocity event.
         """
         if pattern not in self.patterns:
             raise ValueError(f"Invalid pattern: {pattern}. Must be a01, b01, c01, or d01")
-        if not 0 <= time <= 383:
-            raise ValueError(f"Invalid time: {time}. Must be 0-383")
+        if time < 0:
+            raise ValueError(f"Invalid time: {time}. Must be >= 0")
         if not 1 <= pad <= 12:
             raise ValueError(f"Invalid pad: {pad}. Must be 1-12")
         if not 0 <= velocity <= 127:
@@ -133,7 +169,13 @@ class EP133Project:
         if not events:
             return bytes([0x00, 0x01, 0x00, 0x00])
 
-        events = sorted(events, key=lambda x: x[0])
+        # Deduplicate: for same (time, pad), keep highest velocity
+        deduped: dict = {}
+        for evt in events:
+            key = (evt[0], evt[1])
+            if key not in deduped or evt[2] > deduped[key][2]:
+                deduped[key] = evt
+        events = sorted(deduped.values(), key=lambda x: x[0])
 
         if len(events) > 255:
             raise ValueError(f"Too many events: {len(events)}. Maximum is 255")
@@ -155,8 +197,20 @@ class EP133Project:
         if self._template_pads and group in self._template_pads and pad in self._template_pads[group]:
             data = bytearray(self._template_pads[group][pad])
         else:
-            # Minimal 27-byte pad file
+            # 27-byte pad file with correct defaults (reverse-engineered from device backup)
             data = bytearray(27)
+            # Bytes 8-9: sample-specific identifier — device needs this to locate audio data.
+            # Without it the pad is silent even if the sample number is correct.
+            # Values reverse-engineered by reassigning samples on device and diffing backups.
+            sample_num = self.pad_assignments[group].get(pad, 0)
+            sample_id = PAD_SAMPLE_IDS.get(sample_num, (0, 0))
+            data[8]  = sample_id[0]
+            data[9]  = sample_id[1]
+            # Bytes 12-15: project BPM as float32 LE — device writes this on sample assignment.
+            struct.pack_into('<f', data, 12, self.bpm)
+            data[16] = 100   # volume
+            data[20] = 255   # unknown — 0xff in all observed pads
+            data[24] = 60    # pan center
 
         # Set sample number at bytes 1-2
         sample_num = self.pad_assignments[group].get(pad, 0)
@@ -170,7 +224,11 @@ class EP133Project:
 
         Args:
             output_path: Output .ppak file path
-            sounds_dir: Directory containing .wav sound files (optional)
+            sounds_dir: Directory containing .wav sound files (optional).
+                        Files must be named "{NNN} {name}.wav" where NNN is a
+                        zero-padded 3-digit sample number matching pad assignments
+                        (e.g. "001 kick.wav", "042 snare.wav"). The device matches
+                        pads to sounds by the numeric prefix.
         """
         import tempfile
 
@@ -193,15 +251,24 @@ class EP133Project:
                 with open(pattern_path, 'wb') as f:
                     f.write(self._create_pattern_data(events))
 
-            # Write settings
-            settings_path = os.path.join(work_dir, 'settings')
+            # Write settings — always embed BPM as float32 LE at bytes 4-7.
+            # All-zero settings causes "Error Clock" error on device.
             if self._template_settings:
-                with open(settings_path, 'wb') as f:
-                    f.write(self._template_settings)
+                settings = bytearray(self._template_settings)
             else:
-                # Minimal settings (222 bytes)
-                with open(settings_path, 'wb') as f:
-                    f.write(bytes(222))
+                settings = bytearray(222)
+                # Bytes 24-215: 4 groups × 12 float32s (48 bytes each).
+                # -1.0 is the device sentinel for "use default".
+                # float[0] of each group is group project volume; default to 1.0.
+                # All other positions default to -1.0.
+                for i in range(48):  # 48 floats total (4 groups × 12)
+                    struct.pack_into('<f', settings, 24 + i * 4, -1.0)
+                for group_idx in range(4):
+                    struct.pack_into('<f', settings, 24 + group_idx * 48, 1.0)
+            struct.pack_into('<f', settings, 4, self.bpm)
+            settings_path = os.path.join(work_dir, 'settings')
+            with open(settings_path, 'wb') as f:
+                f.write(bytes(settings))
 
             # Create tar
             tar_buffer = io.BytesIO()
@@ -220,14 +287,14 @@ class EP133Project:
             meta = {
                 "info": "teenage engineering - pak file",
                 "pak_version": 1,
-                "pak_type": "user",
+                "pak_type": "project",
                 "pak_release": "1.2.0",
                 "device_name": "EP-133",
                 "device_sku": self.device_sku,
                 "device_version": "2.0.5",
                 "generated_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
                 "author": "Claude",
-                "base_sku": self.device_sku
+                "base_sku": self.base_sku
             }
 
             # Create .ppak (ZIP with leading slashes)
@@ -289,12 +356,12 @@ def create_basic_beat(project: EP133Project,
 
 if __name__ == '__main__':
     # Example usage
-    project = EP133Project(device_sku="TE032AS001", project_num=1)
+    project = EP133Project(bpm=120, device_sku="TE032AS001", project_num=1)
 
-    # Assign samples (example sample numbers)
-    project.assign_sample('a', 10, 1)    # Kick
-    project.assign_sample('a', 7, 100)   # Snare
-    project.assign_sample('a', 5, 200)   # Hi-hat
+    # Assign samples — sound files must be named "{NNN} {name}.wav"
+    project.assign_sample('a', 10, 1)    # pad 10 → "001 kick.wav"
+    project.assign_sample('a', 7, 100)   # pad 7  → "100 snare.wav"
+    project.assign_sample('a', 5, 200)   # pad 5  → "200 hihat.wav"
 
     # Create a basic beat
     create_basic_beat(project)
