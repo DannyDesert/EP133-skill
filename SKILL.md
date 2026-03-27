@@ -143,13 +143,38 @@ for i in range(16):
 
 ## Device SKU
 
-The meta.json requires matching `device_sku` and `base_sku`. Get from user's backup file or use common value `TE032AS001`.
+The meta.json requires a `device_sku` and `base_sku` that may be different. Get from user's backup file or use common value `TE032AS001`.
+
+## User Manual
+
+Reference `references/user-manual.md` for questions from the user about how to perform an action on the EP-133.
+
+Run `scripts/fetch_manual.py` to update `references/user-manual.md` to the latest content from the Teenage Engineering website.
+
+## Sample Assignment
+
+See `references/default-samples.csv` for a list of the default sample names and numbers. Reference this list to choose which sample number to assign to a pad.
+
+**The samples are organized into the following categories:**
+- Kick drums start at 1
+- Snare drums start at 100
+- Cymbals start at 200
+- Percussion sounds start at 300
+- Bass sounds start at 400
+- Melodic sounds start at 500
+- Loops start at 600
+- User 1 starts at 700
+- User 2 starts at 800
+- SFX star at 900
+
+If the user asks to generate and load new samples, assign them to the appropriate category and do not overwrite an existing default sample.
 
 ## Troubleshooting
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| "SKUS DOES NOT MATCH" | Wrong device_sku in meta.json | Use SKU from user's backup |
+| "SKUS DOES NOT MATCH" | Wrong device_sku or base_sku in meta.json | Use SKU from user's backup |
 | "PAK FILE IS EMPTY" | Missing leading slashes in ZIP paths | Use `/projects/P01.tar` not `projects/P01.tar` |
 | Device crash | Invalid byte values in patterns | Use only documented encoding values |
 | No sound on playback | Wrong pattern file for group | Put Group B events in `patterns/b01`, not `patterns/a01` |
+| Error Clock 43 | The BPM cannot be 0 | Set a BPM value in ppak |
