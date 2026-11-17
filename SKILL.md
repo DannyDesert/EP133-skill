@@ -45,20 +45,40 @@ P0X.tar
 ├── patterns/b01        (Pattern for Group B)
 ├── patterns/c01        (Pattern for Group C)
 ├── patterns/d01        (Pattern for Group D)
+├── scenes              (Optional: scenes + song list, 712 bytes)
 └── settings
 ```
 
 ## Critical Encoding Details
 
+### Pattern Header (4 bytes)
+
+```
+Byte 0: 0x00
+Byte 1: Length in bars (1-99). Not a constant: a 2-bar pattern needs 0x02
+Byte 2: Number of events
+Byte 3: 0x00
+```
+
 ### Pattern Events (8 bytes each)
 
 ```
-Bytes 0-1: Time position (uint16 little-endian, 0-383 for one bar)
+Bytes 0-1: Time position (uint16 little-endian, 0 to bars*384-1)
 Byte 2:    Row byte (pad number: 0x00=pad1, 0x08=pad2, ... 0x58=pad12)
 Byte 3:    Column byte (always 0x3c for standard playback)
 Byte 4:    Velocity (0-127)
-Bytes 5-7: Flags (typically 0x10 0x00 0x00)
+Bytes 5-6: Note length in ticks (uint16 little-endian; 0x10 = 16 ticks)
+Byte 7:    Flags (0x00)
 ```
+
+### Scenes and Song Mode
+
+The optional `scenes` member (712 bytes) holds 99 scenes and the song list:
+- Each scene is 6 bytes at offset `7 + 6*(n-1)`: pattern number for groups A, B, C, D, then the time signature (`04 04`).
+- The song list is at offset 613: one scene number per position. Its length is at offset 612, and the scene count is at offset 604.
+- A song position plays its scene once, so repeat a scene number to repeat a section.
+
+See `references/format-details.md` for the full layout and safety notes.
 
 ### Group/Pattern Relationship
 
@@ -117,6 +137,24 @@ project.add_event('a01', 288, 7, 120)     # Snare on beat 4
 project.save('/path/to/output.ppak', sounds_dir='/path/to/sounds')
 ```
 
+### Multi-bar patterns and a song
+
+```python
+project = EP133Project(device_sku="TE032AS001")
+project.load_template('/path/to/user_backup.pak')   # keeps pads, settings and native scenes bytes
+
+project.set_pattern_bars('a01', 2)                  # 2 bars: ticks 0-767
+project.add_event('a01', 0, 10, 127)
+project.add_event('a01', 384, 10, 120)              # beat 1 of bar 2
+project.add_event('a02', 0, 7, 120, duration=24)    # note length in ticks
+
+intro = project.add_scene(a=1)                      # scene 1 plays A01
+fill = project.add_scene(a=2)                       # scene 2 plays A02
+project.set_song([intro, intro, intro, fill])       # 3 x intro, then the fill
+
+project.save('/path/to/song.ppak')
+```
+
 ## Common Patterns
 
 ### 4-on-the-floor (House)
@@ -153,3 +191,6 @@ The meta.json requires matching `device_sku` and `base_sku`. Get from user's bac
 | "PAK FILE IS EMPTY" | Missing leading slashes in ZIP paths | Use `/projects/P01.tar` not `projects/P01.tar` |
 | Device crash | Invalid byte values in patterns | Use only documented encoding values |
 | No sound on playback | Wrong pattern file for group | Put Group B events in `patterns/b01`, not `patterns/a01` |
+| Pattern is only 1 bar long | Header byte 1 left at 0x01 | Set byte 1 to the bar count (`set_pattern_bars`) |
+| `err pattern 187` | Scene refers to a pattern member that isn't in the tar | Write every referenced pattern, even if empty |
+| `err scene 156` | Unused scene records zeroed completely | Unused scenes must be `00 00 00 00 04 04` |

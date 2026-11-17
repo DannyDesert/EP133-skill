@@ -40,22 +40,29 @@ Source: https://teenage.engineering/guides/ep-133/tech-specs
 
 ### Header (4 bytes)
 ```
-Byte 0: 0x00 (constant)
-Byte 1: 0x01 (constant)
+Byte 0: 0x00 (constant; must be 0)
+Byte 1: Length in bars (uint8, 1-99)
 Byte 2: Number of events (uint8, max 255)
 Byte 3: 0x00 (constant)
 ```
+
+Byte 1 is the pattern's length, not a constant. A 1-bar pattern has `0x01` here; a 2-bar pattern has `0x02` and its events run from tick 0 to 767.
 
 ### Event Structure (8 bytes each)
 ```
 Offset  Size  Type      Description
 ------  ----  --------  -----------
-0       2     uint16LE  Time position (0-383 ticks per bar)
+0       2     uint16LE  Time position in ticks (0 to bars*384-1)
 2       1     uint8     Row byte (pad identifier)
 3       1     uint8     Column byte (0x3c = 60 for normal playback)
 4       1     uint8     Velocity (0-127)
-5       3     bytes     Flags (typically 0x10 0x00 0x00)
+5       2     uint16LE  Note length in ticks (24 = one 16th step)
+7       1     uint8     Flags (0x00 observed)
 ```
+
+Patterns recorded on the device hold note lengths of 12-26 ticks at bytes 5-6. The older `0x10 0x00 0x00` value is a 16-tick note with no flags.
+
+Events are sorted by time.
 
 ### Row Byte to Pad Mapping
 ```
@@ -103,6 +110,56 @@ data[1:3] = struct.pack('<H', sample_number)
 
 with open(pad_file, 'wb') as f:
     f.write(data)
+```
+
+## Scenes File (712 bytes)
+
+The `scenes` member holds the scenes and the song list (song mode). It goes in the project tar after the patterns and before `settings`. A project with no committed scenes has no `scenes` member, and the device uses default scenes.
+
+Layout as observed on OS 2.5.1. Source: [kmorrill/ep-series-sysex](https://github.com/kmorrill/ep-series-sysex/blob/main/docs/project-format.md), and it matches a real device backup byte for byte:
+
+```
+Offset    Size     Description
+--------  -------  -----------
+0         7        Header (unknown; the device wrote 00 01 01 01 01 04 04, the
+                   kmorrill doc observed 00 00 00 00 00 04 04). Preserve from a template.
+7         99 x 6   Scenes 1-99, one 6-byte record each (scene n at 7 + 6*(n-1))
+601       111      Trailer
+```
+
+### Scene record (6 bytes)
+```
+Byte 0: Group A pattern number (1-99; 0 = unused scene)
+Byte 1: Group B pattern number
+Byte 2: Group C pattern number
+Byte 3: Group D pattern number
+Byte 4: Time signature numerator   (literal, e.g. 4)
+Byte 5: Time signature denominator (literal, e.g. 4)
+```
+
+Unused records must be `00 00 00 00 04 04`; zeroing the time signature gives `err scene 156`. Scene 1 is the scene the device loads as the current one.
+
+### Trailer (111 bytes, file offset 601)
+```
+Trailer byte 3   (file 604):      Number of scenes in use
+Trailer byte 11  (file 612):      Song length (number of song positions, 0-99)
+Trailer byte 12+ (file 613-711):  Song list, one byte per position: a 1-based scene number
+Other bytes:                      0x00 observed
+```
+
+Each song position plays its scene once. A position lasts as long as the longest pattern in that scene. So, to repeat a section, repeat its scene number in the song list.
+
+To play the song on the device: hold MAIN and press the ENTER pad to open the song list editor, then press SHIFT + PLAY to play from position 1 (see the official guide, "song mode").
+
+### Safety notes
+- Only reference patterns that exist as members in the same project tar (`err pattern 187`). Write empty patterns (`00 01 00 00`) for scene slots you don't use.
+- Prefer patching a `scenes` member from the user's own backup over building one from zeros. The header and trailer still have unknown bytes, and the kmorrill doc reports that a 2.0.5-era `scenes` member does not carry over to 2.5.1.
+- Status: the scene records and song list are verified by decoding device-written files. Playback of a written song list on the device is not yet confirmed.
+
+### Example: song with repeats
+```
+scenes:  1 = A01 intro, 2 = A02 verse, 3 = A03 fill
+song:    1 1 2 2 2 3 2 2      (length byte = 8)
 ```
 
 ## Settings File (222 bytes)

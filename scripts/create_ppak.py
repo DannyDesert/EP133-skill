@@ -11,6 +11,7 @@ import zipfile
 import io
 import json
 import os
+import re
 import shutil
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
@@ -32,11 +33,17 @@ class EP133Project:
         self.pad_assignments: Dict[str, Dict[int, int]] = {
             'a': {}, 'b': {}, 'c': {}, 'd': {}
         }
-        self.patterns: Dict[str, List[Tuple[int, int, int]]] = {
+        # events are (time, pad, velocity, duration)
+        self.patterns: Dict[str, List[Tuple[int, int, int, int]]] = {
             'a01': [], 'b01': [], 'c01': [], 'd01': []
         }
+        self.pattern_bars: Dict[str, int] = {}
+        # scenes: (pattern A, B, C, D, time-sig numerator, denominator); song: 1-based scene numbers
+        self.scenes: List[Tuple[int, int, int, int, int, int]] = []
+        self.song: List[int] = []
         self._template_pads = None
         self._template_settings = None
+        self._template_scenes = None
 
     def load_template(self, backup_path: str):
         """
@@ -80,6 +87,13 @@ class EP133Project:
             with open(settings_path, 'rb') as f:
                 self._template_settings = f.read()
 
+        scenes_path = os.path.join(dir_path, 'scenes')
+        if os.path.exists(scenes_path):
+            with open(scenes_path, 'rb') as f:
+                data = f.read()
+            if len(data) == SCENES_SIZE:
+                self._template_scenes = data
+
     def assign_sample(self, group: str, pad: int, sample_num: int):
         """
         Assign a sample to a pad.
@@ -95,26 +109,96 @@ class EP133Project:
             raise ValueError(f"Invalid pad: {pad}. Must be 1-12")
         self.pad_assignments[group][pad] = sample_num
 
-    def add_event(self, pattern: str, time: int, pad: int, velocity: int = 100):
+    @staticmethod
+    def _check_pattern_name(pattern: str):
+        m = re.fullmatch(r'([abcd])(\d\d)', pattern)
+        if not m or not 1 <= int(m.group(2)) <= 99:
+            raise ValueError(f"Invalid pattern: {pattern}. Must be a01-a99, b01-b99, c01-c99 or d01-d99")
+
+    def set_pattern_bars(self, pattern: str, bars: int):
+        """
+        Set a pattern's length in bars (1-99, default 1). Stored in header byte 1.
+
+        Args:
+            pattern: Pattern name, e.g. 'a01' or 'b12'
+            bars: Length in bars
+        """
+        self._check_pattern_name(pattern)
+        if not 1 <= bars <= 99:
+            raise ValueError(f"Invalid bars: {bars}. Must be 1-99")
+        too_late = [e for e in self.patterns.get(pattern, []) if e[0] >= bars * TICKS_PER_BAR]
+        if too_late:
+            raise ValueError(f"{pattern} has events past bar {bars}")
+        self.patterns.setdefault(pattern, [])
+        self.pattern_bars[pattern] = bars
+
+    def add_event(self, pattern: str, time: int, pad: int, velocity: int = 100,
+                  duration: int = 16):
         """
         Add an event to a pattern.
 
         Args:
-            pattern: Pattern name ('a01', 'b01', 'c01', 'd01')
-            time: Time position in ticks (0-383 for one bar)
+            pattern: Pattern name, e.g. 'a01' (group A, pattern 1) or 'b12'
+            time: Time position in ticks (0 to bars*384-1; see set_pattern_bars)
             pad: Pad number 1-12
             velocity: Velocity 0-127 (default 100)
+            duration: Note length in ticks (default 16; 24 = one 16th step)
         """
-        if pattern not in self.patterns:
-            raise ValueError(f"Invalid pattern: {pattern}. Must be a01, b01, c01, or d01")
-        if not 0 <= time <= 383:
-            raise ValueError(f"Invalid time: {time}. Must be 0-383")
+        self._check_pattern_name(pattern)
+        bars = self.pattern_bars.get(pattern, 1)
+        max_time = bars * TICKS_PER_BAR - 1
+        if not 0 <= time <= max_time:
+            raise ValueError(f"Invalid time: {time}. Must be 0-{max_time} for a {bars}-bar pattern")
         if not 1 <= pad <= 12:
             raise ValueError(f"Invalid pad: {pad}. Must be 1-12")
         if not 0 <= velocity <= 127:
             raise ValueError(f"Invalid velocity: {velocity}. Must be 0-127")
+        if not 1 <= duration <= 0xFFFF:
+            raise ValueError(f"Invalid duration: {duration}. Must be 1-65535 ticks")
 
-        self.patterns[pattern].append((time, pad, velocity))
+        self.patterns.setdefault(pattern, []).append((time, pad, velocity, duration))
+
+    def add_scene(self, a: int = 1, b: int = 1, c: int = 1, d: int = 1,
+                  numerator: int = 4, denominator: int = 4) -> int:
+        """
+        Append a scene: which pattern number each group plays (1-99) plus a time signature.
+        Scene 1 is the one the device shows on load. Returns the new scene's number.
+        """
+        if len(self.scenes) >= 99:
+            raise ValueError("Maximum is 99 scenes")
+        for n in (a, b, c, d):
+            if not 1 <= n <= 99:
+                raise ValueError(f"Invalid pattern number in scene: {n}. Must be 1-99")
+        self.scenes.append((a, b, c, d, numerator, denominator))
+        return len(self.scenes)
+
+    def set_song(self, scene_numbers: List[int]):
+        """
+        Set the song list: up to 99 positions, each a 1-based scene number.
+        Each position lasts as long as the longest pattern in its scene.
+        """
+        if len(scene_numbers) > 99:
+            raise ValueError("Maximum is 99 song positions")
+        self.song = list(scene_numbers)
+
+    def _create_scenes_data(self) -> bytes:
+        """Build the 712-byte scenes member (see references/format-details.md)."""
+        for n in self.song:
+            if not 1 <= n <= len(self.scenes):
+                raise ValueError(f"Song refers to scene {n}, but only {len(self.scenes)} scenes exist")
+        if self._template_scenes:
+            data = bytearray(self._template_scenes)   # keeps the device's own header/trailer bytes
+        else:
+            data = bytearray(SCENES_SIZE)
+            data[0:7] = bytes([0, 0, 0, 0, 0, 4, 4])
+        for i in range(99):
+            chunk = self.scenes[i] if i < len(self.scenes) else (0, 0, 0, 0, 4, 4)
+            data[7 + 6 * i: 13 + 6 * i] = bytes(chunk)
+        t = SCENES_TRAILER
+        data[t + 3] = len(self.scenes)
+        data[t + 11] = len(self.song)
+        data[t + 12: t + 111] = bytes(self.song).ljust(99, b'\0')
+        return bytes(data)
 
     def add_kick(self, pattern: str, time: int, pad: int = 10, velocity: int = 127):
         """Convenience method for adding kick drum hits"""
@@ -128,24 +212,21 @@ class EP133Project:
         """Convenience method for adding hi-hat hits"""
         self.add_event(pattern, time, pad, velocity)
 
-    def _create_pattern_data(self, events: List[Tuple[int, int, int]]) -> bytes:
+    def _create_pattern_data(self, events: List[Tuple[int, int, int, int]], bars: int = 1) -> bytes:
         """Convert event list to binary pattern data"""
-        if not events:
-            return bytes([0x00, 0x01, 0x00, 0x00])
-
         events = sorted(events, key=lambda x: x[0])
 
         if len(events) > 255:
             raise ValueError(f"Too many events: {len(events)}. Maximum is 255")
 
-        header = bytes([0x00, 0x01, len(events), 0x00])
-        data = header
+        # header: 0x00, bars, event count, 0x00
+        data = bytes([0x00, bars, len(events), 0x00])
 
-        for time, pad, velocity in events:
+        for time, pad, velocity, duration in events:
             row = (pad - 1) * 8
             col = 0x3c  # Standard playback
-            event = struct.pack('<H', time) + bytes([row, col, velocity, 0x10, 0x00, 0x00])
-            data += event
+            # time u16, pad, note, velocity, duration u16 (ticks), flags
+            data += struct.pack('<HBBBHB', time, row, col, velocity, duration, 0x00)
 
         return data
 
@@ -188,10 +269,19 @@ class EP133Project:
                         f.write(self._create_pad_data(group, pad))
 
             # Write pattern files
-            for pattern_name, events in self.patterns.items():
+            patterns = dict(self.patterns)
+            # every pattern a scene refers to must exist as a member
+            for scene in self.scenes:
+                for group, num in zip('abcd', scene[:4]):
+                    patterns.setdefault(f'{group}{num:02d}', [])
+            for pattern_name, events in sorted(patterns.items()):
                 pattern_path = os.path.join(work_dir, 'patterns', pattern_name)
                 with open(pattern_path, 'wb') as f:
-                    f.write(self._create_pattern_data(events))
+                    f.write(self._create_pattern_data(events, self.pattern_bars.get(pattern_name, 1)))
+
+            if self.scenes:
+                with open(os.path.join(work_dir, 'scenes'), 'wb') as f:
+                    f.write(self._create_scenes_data())
 
             # Write settings
             settings_path = os.path.join(work_dir, 'settings')
@@ -211,6 +301,8 @@ class EP133Project:
                 with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
                     tar.add('pads')
                     tar.add('patterns')
+                    if self.scenes:
+                        tar.add('scenes')
                     tar.add('settings')
             finally:
                 os.chdir(orig_dir)
@@ -254,6 +346,10 @@ class EP133Project:
 
         return output_path
 
+
+# Scenes member layout (OS 2.5.1): 7-byte header, 99 x 6-byte scenes, 111-byte trailer
+SCENES_SIZE = 712
+SCENES_TRAILER = 7 + 99 * 6
 
 # Timing constants
 TICKS_PER_BAR = 384
